@@ -180,8 +180,9 @@ AI: "恭喜！我来为您记录锻炼完成情况..."
   "type": "todo",
   "text": "完成项目文档",
   "notes": "包括API文档和用户指南",
-  "difficulty": 1.5,
-  "priority": 2,
+  "priority": 1.5,
+  "tags": ["工作"],
+  "date": "2026-10-10",
   "checklist": [
     {"text": "编写API文档", "completed": false},
     {"text": "创建用户指南", "completed": false},

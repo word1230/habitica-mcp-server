@@ -1,5 +1,5 @@
 {
-  "name": "habitica-mcp-server",
+  "name": "@cheems897/habitica-mcp-server",
   "version": "0.0.5",
   "description": "Model Context Protocol server for Habitica API integration. Enable AI assistants to manage your Habitica tasks, habits, pets, and rewards through natural language.",
   "main": "index.js",
@@ -41,13 +41,13 @@
     "email": "breakerr@qq.com"
   },
   "license": "MIT",
-  "homepage": "https://github.com/ibreaker/habitica-mcp-server#readme",
+  "homepage": "https://github.com/word1230/habitica-mcp-server#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ibreaker/habitica-mcp-server.git"
+    "url": "git+https://github.com/word1230/habitica-mcp-server.git"
   },
   "bugs": {
-    "url": "https://github.com/ibreaker/habitica-mcp-server/issues"
+    "url": "https://github.com/word1230/habitica-mcp-server/issues"
   },
   "files": [
     "index.js",
