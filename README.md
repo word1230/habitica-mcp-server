@@ -3,7 +3,7 @@
 MCP server for the Habitica API：让 AI 助手读写 Habitica 的任务、习惯、宠物与奖励。
 
 - 原项目：[iBreaker/habitica-mcp-server](https://github.com/iBreaker/habitica-mcp-server)
-- 本仓库：[word1230/habitica-mcp-server](https://github.com/word1230/habitica-mcp-server)，下述改动在其基础上做。
+- 本包：[@cheems897/habitica-mcp-server](https://www.npmjs.com/package/@cheems897/habitica-mcp-server)，下述改动在其基础上做。
 
 ## 本次改动（相对上游）
 
@@ -14,8 +14,57 @@ MCP server for the Habitica API：让 AI 助手读写 Habitica 的任务、习�
 - 新增 `delete_tag`：按名称或 ID 删除，未知名称报错；服务端自动从所有任务移除该标签。
 - 新增 `GLOSSARY.md`：任务、备注、优先级、标签、截止日期、开始日期等术语定义。
 
-## 运行
+## 给别人用
+
+凭证是私人的，每人用自己的 User ID + API Token（官网 → 用户 → 设置 → API 页复制）。
+
+### 方式一：全局安装
 
 ```bash
+npm i -g @cheems897/habitica-mcp-server
+```
+
+Claude Code：
+
+```bash
+claude mcp add habitica -e HABITICA_USER_ID=... -e HABITICA_API_TOKEN=... -e MCP_LANG=zh-CN -- habitica-mcp-server
+```
+
+opencode（`opencode.json`）：
+
+```json
+"habitica": {
+  "type": "local",
+  "command": ["habitica-mcp-server"],
+  "environment": {
+    "HABITICA_USER_ID": "...", "HABITICA_API_TOKEN": "...", "MCP_LANG": "zh-CN"
+  }
+}
+```
+
+### 方式二：免安装（npx，以发版版本号为准）
+
+Claude Code：
+
+```bash
+claude mcp add habitica -e HABITICA_USER_ID=... -e HABITICA_API_TOKEN=... -e MCP_LANG=zh-CN -- npx -y @cheems897/habitica-mcp-server@0.0.5
+```
+
+opencode（`opencode.json`）：
+
+```json
+"habitica": {
+  "type": "local",
+  "command": ["npx", "-y", "@cheems897/habitica-mcp-server@0.0.5"],
+  "environment": {
+    "HABITICA_USER_ID": "...", "HABITICA_API_TOKEN": "...", "MCP_LANG": "zh-CN"
+  }
+}
+```
+
+## 本地开发
+
+```bash
+git clone https://github.com/word1230/habitica-mcp-server.git
 HABITICA_USER_ID=... HABITICA_API_TOKEN=... MCP_LANG=zh-CN node index.js
 ```
