@@ -175,8 +175,9 @@ AI:   "Great job! The workout is logged."
   "type": "todo",
   "text": "Complete project documentation",
   "notes": "Including API docs and user guide",
-  "difficulty": 1.5,
-  "priority": 2,
+  "priority": 1.5,
+  "tags": ["work"],
+  "date": "2026-10-10",
   "checklist": [
     {"text": "Write API documentation", "completed": false},
     {"text": "Create user guide", "completed": false},

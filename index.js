@@ -93,15 +93,19 @@ const tools = [
           type: 'string',
           description: t('Task notes', '任务备注'),
         },
-        difficulty: {
-          type: 'number',
-          enum: [0.1, 1, 1.5, 2],
-          description: t('Difficulty (0.1=easy, 1=medium, 1.5=hard, 2=very hard)', '难度 (0.1=简单, 1=中等, 1.5=困难, 2=极难)'),
-        },
         priority: {
           type: 'number',
           enum: [0.1, 1, 1.5, 2],
-          description: t('Priority (0.1=low, 1=med, 1.5=high, 2=urgent)', '优先级 (0.1=低, 1=中, 1.5=高, 2=极高)'),
+          description: t('Priority / difficulty (0.1=trivial, 1=easy, 1.5=medium, 2=hard)', '优先级/难度 (0.1=琐碎, 1=简单, 1.5=中等, 2=困难)'),
+        },
+        tags: {
+          type: 'array',
+          items: { type: 'string' },
+          description: t('Tag names or IDs (names are resolved via get_tags; unknown names cause an error)', '标签名称或ID（名称经 get_tags 解析，未知名称直接报错）'),
+        },
+        date: {
+          type: 'string',
+          description: t('Due date for todos only, YYYY-MM-DD interpreted as Asia/Shanghai midnight', '截止日期，仅 todo 有效，YYYY-MM-DD，按北京时间午夜理解'),
         },
         checklist: {
           type: 'array',
@@ -162,6 +166,20 @@ const tools = [
         notes: {
           type: 'string',
           description: t('Task notes', '任务备注'),
+        },
+        priority: {
+          type: 'number',
+          enum: [0.1, 1, 1.5, 2],
+          description: t('Priority / difficulty (0.1=trivial, 1=easy, 1.5=medium, 2=hard)', '优先级/难度 (0.1=琐碎, 1=简单, 1.5=中等, 2=困难)'),
+        },
+        tags: {
+          type: 'array',
+          items: { type: 'string' },
+          description: t('Tag names or IDs (full replace; unknown names cause an error)', '标签名称或ID（全量替换，未知名称直接报错）'),
+        },
+        date: {
+          type: 'string',
+          description: t('Due date for todos only, YYYY-MM-DD as Asia/Shanghai midnight; empty string clears it', '截止日期，仅 todo 有效，YYYY-MM-DD 按北京时间午夜理解；空串表示清除'),
         },
         completed: {
           type: 'boolean',
@@ -253,6 +271,20 @@ const tools = [
         },
       },
       required: ['name'],
+    },
+  },
+  {
+    name: 'delete_tag',
+    description: t('Delete tag by name or ID (auto-removed from all tasks)', '按名称或ID删除标签（自动从所有任务移除）'),
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tag: {
+          type: 'string',
+          description: t('Tag name or ID', '标签名称或ID'),
+        },
+      },
+      required: ['tag'],
     },
   },
   {
@@ -525,6 +557,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       
       case 'create_tag':
         return await createTag(args.name);
+
+      case 'delete_tag':
+        return await deleteTag(args.tag);
       
       case 'get_pets':
         return await getPets();
@@ -610,8 +645,76 @@ async function getTasks(type) {
   };
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isUUID(v) {
+  return typeof v === 'string' && UUID_RE.test(v);
+}
+
+async function resolveTagIds(tags) {
+  if (tags == null) return undefined;
+  if (!Array.isArray(tags)) {
+    throw new McpError(ErrorCode.InvalidParams, 'tags 须为字符串数组（标签名称或ID）');
+  }
+  if (tags.length === 0) return [];
+  const resp = await habiticaClient.get('/tags');
+  const list = Array.isArray(resp.data?.data) ? resp.data.data : (Array.isArray(resp.data) ? resp.data : []);
+  const byName = new Map(list.map((tg) => [tg.name, tg.id]));
+  const out = [];
+  const missing = [];
+  for (const raw of tags) {
+    const s = String(raw);
+    if (isUUID(s)) {
+      out.push(s);
+      continue;
+    }
+    if (byName.has(s)) {
+      out.push(byName.get(s));
+    } else {
+      missing.push(s);
+    }
+  }
+  if (missing.length > 0) {
+    const avail = list.map((tg) => tg.name).join(', ') || '(暂无标签)';
+    throw new McpError(ErrorCode.InvalidParams, `未知标签: ${missing.join(', ')}。可用: ${avail}`);
+  }
+  return out;
+}
+
+// 截止日期时区：用户输入 YYYY-MM-DD 按 Asia/Shanghai 午夜理解，转 UTC ISO 发给 Habitica。
+// Shanghai 固定 UTC+8（无夏令时），如 2026-10-10 -> 2026-10-09T16:00:00.000Z。
+const TODO_DATE_TZ_OFFSET = '+08:00';
+
+function toTodoDate(dateStr, type) {
+  if (dateStr === undefined) return undefined;
+  if (type && type !== 'todo') {
+    throw new McpError(ErrorCode.InvalidParams, `date 仅 todo 有效，当前类型为 ${type}`);
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    throw new McpError(ErrorCode.InvalidParams, `date 格式须为 YYYY-MM-DD，收到: ${dateStr}`);
+  }
+  const d = new Date(`${dateStr}T00:00:00${TODO_DATE_TZ_OFFSET}`);
+  if (Number.isNaN(d.getTime())) {
+    throw new McpError(ErrorCode.InvalidParams, `非法日期: ${dateStr}`);
+  }
+  return d.toISOString();
+}
+
 async function createTask(taskData) {
-  const response = await habiticaClient.post('/tasks/user', taskData);
+  const { type, tags, date, difficulty, ...rest } = taskData || {};
+  // difficulty 已废弃：直接丢弃，不透传（breaking change，见 GLOSSARY）
+  void difficulty;
+  if (date !== undefined && date !== null && date !== '' && type && type !== 'todo') {
+    throw new McpError(ErrorCode.InvalidParams, `date 仅 todo 有效，当前类型为 ${type}`);
+  }
+  const payload = { ...rest, type };
+  if (tags !== undefined) {
+    payload.tags = await resolveTagIds(tags);
+  }
+  if (date !== undefined && date !== null && date !== '') {
+    payload.date = toTodoDate(date, type);
+  }
+  Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
+  const response = await habiticaClient.post('/tasks/user', payload);
   const task = response.data.data;
   
   return {
@@ -644,7 +747,32 @@ async function scoreTask(taskId, direction = 'up') {
 }
 
 async function updateTask(taskId, updates) {
-  const response = await habiticaClient.put(`/tasks/${taskId}`, updates);
+  const { taskId: _drop, difficulty, tags, date, ...rest } = updates || {};
+  void _drop;
+  void difficulty;
+  const payload = { ...rest };
+  if (tags !== undefined) {
+    payload.tags = await resolveTagIds(tags);
+  }
+  if (date !== undefined) {
+    if (date === '' || date === null) {
+      payload.date = null;
+    } else {
+      let taskType;
+      try {
+        const r = await habiticaClient.get(`/tasks/${taskId}`);
+        taskType = r.data?.data?.type;
+      } catch {
+        taskType = undefined;
+      }
+      if (taskType && taskType !== 'todo') {
+        throw new McpError(ErrorCode.InvalidParams, `date 仅 todo 有效，当前任务类型为 ${taskType}`);
+      }
+      payload.date = toTodoDate(date, taskType || 'todo');
+    }
+  }
+  Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
+  const response = await habiticaClient.put(`/tasks/${taskId}`, payload);
   const task = response.data.data;
   
   return {
@@ -746,6 +874,21 @@ async function createTag(name) {
       {
         type: 'text',
         text: `成功创建标签: ${tag.name} (ID: ${tag.id})`,
+      },
+    ],
+  };
+}
+
+async function deleteTag(tag) {
+  const ids = await resolveTagIds([tag]);
+  const tagId = ids[0];
+  await habiticaClient.delete(`/tags/${tagId}`);
+
+  return {
+    content: [
+      {
+        type: 'text',
+        text: `成功删除标签: ${tag} (ID: ${tagId})，已自动从所有任务移除`,
       },
     ],
   };
