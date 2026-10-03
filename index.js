@@ -33,6 +33,7 @@ const habiticaClient = axios.create({
   headers: {
     'x-api-user': HABITICA_USER_ID,
     'x-api-key': HABITICA_API_TOKEN,
+    'x-client': `${HABITICA_USER_ID}-habitica-mcp-server`,
     'Content-Type': 'application/json',
   },
 });
@@ -107,6 +108,42 @@ const tools = [
           type: 'string',
           description: t('Due date for todos only, YYYY-MM-DD interpreted as Asia/Shanghai midnight', '截止日期，仅 todo 有效，YYYY-MM-DD，按北京时间午夜理解'),
         },
+        startDate: {
+          type: 'string',
+          description: t('Start date for dailies only, YYYY-MM-DD interpreted as Asia/Shanghai midnight', '开始日期，仅 daily 有效，YYYY-MM-DD，按北京时间午夜理解'),
+        },
+        frequency: {
+          type: 'string',
+          enum: ['daily', 'weekly', 'monthly', 'yearly'],
+          description: t('Repeat cycle for dailies only (default weekly)', '重复周期，仅 daily 有效（默认 weekly）'),
+        },
+        repeat: {
+          type: 'object',
+          properties: {
+            su: { type: 'boolean' },
+            m: { type: 'boolean' },
+            t: { type: 'boolean' },
+            w: { type: 'boolean' },
+            th: { type: 'boolean' },
+            f: { type: 'boolean' },
+            s: { type: 'boolean' },
+          },
+          description: t('Weekly repeat days for dailies with frequency=weekly (missing days default true)', '每周重复日，仅 frequency=weekly 的 daily 有效，缺省的天默认为 true'),
+        },
+        everyX: {
+          type: 'integer',
+          description: t('Repeat every X days/weeks/months/years, dailies only (default 1)', '重复间隔，仅 daily 有效，每 X 天/周/月/年重复一次（默认 1）'),
+        },
+        daysOfMonth: {
+          type: 'array',
+          items: { type: 'integer' },
+          description: t('Month days for dailies with frequency=monthly', '按月重复（几号），仅 frequency=monthly 的 daily 有效'),
+        },
+        weeksOfMonth: {
+          type: 'array',
+          items: { type: 'integer' },
+          description: t('Month weeks for dailies with frequency=monthly', '按月重复（第几周），仅 frequency=monthly 的 daily 有效'),
+        },
         checklist: {
           type: 'array',
           items: {
@@ -180,6 +217,42 @@ const tools = [
         date: {
           type: 'string',
           description: t('Due date for todos only, YYYY-MM-DD as Asia/Shanghai midnight; empty string clears it', '截止日期，仅 todo 有效，YYYY-MM-DD 按北京时间午夜理解；空串表示清除'),
+        },
+        startDate: {
+          type: 'string',
+          description: t('Start date for dailies only, YYYY-MM-DD as Asia/Shanghai midnight; empty string clears it', '开始日期，仅 daily 有效，YYYY-MM-DD 按北京时间午夜理解；空串表示清除'),
+        },
+        frequency: {
+          type: 'string',
+          enum: ['daily', 'weekly', 'monthly', 'yearly'],
+          description: t('Repeat cycle for dailies only', '重复周期，仅 daily 有效'),
+        },
+        repeat: {
+          type: 'object',
+          properties: {
+            su: { type: 'boolean' },
+            m: { type: 'boolean' },
+            t: { type: 'boolean' },
+            w: { type: 'boolean' },
+            th: { type: 'boolean' },
+            f: { type: 'boolean' },
+            s: { type: 'boolean' },
+          },
+          description: t('Weekly repeat days for dailies (partial input merges with existing)', '每周重复日，仅 daily 有效，部分输入与现有合并'),
+        },
+        everyX: {
+          type: 'integer',
+          description: t('Repeat every X days/weeks/months/years, dailies only', '重复间隔，仅 daily 有效，每 X 天/周/月/年重复一次'),
+        },
+        daysOfMonth: {
+          type: 'array',
+          items: { type: 'integer' },
+          description: t('Month days for dailies with frequency=monthly', '按月重复（几号），仅 frequency=monthly 的 daily 有效'),
+        },
+        weeksOfMonth: {
+          type: 'array',
+          items: { type: 'integer' },
+          description: t('Month weeks for dailies with frequency=monthly', '按月重复（第几周），仅 frequency=monthly 的 daily 有效'),
         },
         completed: {
           type: 'boolean',
@@ -699,8 +772,126 @@ function toTodoDate(dateStr, type) {
   return d.toISOString();
 }
 
+function toDailyStartDate(startDate, type) {
+  if (startDate === undefined) return undefined;
+  if (type && type !== 'daily') {
+    throw new McpError(ErrorCode.InvalidParams, `startDate 仅 daily 有效，当前类型为 ${type}`);
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
+    throw new McpError(ErrorCode.InvalidParams, `startDate 格式须为 YYYY-MM-DD，收到: ${startDate}`);
+  }
+  const d = new Date(`${startDate}T00:00:00${TODO_DATE_TZ_OFFSET}`);
+  if (Number.isNaN(d.getTime())) {
+    throw new McpError(ErrorCode.InvalidParams, `非法日期: ${startDate}`);
+  }
+  return d.toISOString();
+}
+
+const REPEAT_KEYS = ['su', 'm', 't', 'w', 'th', 'f', 's'];
+
+function assertRepeatShape(repeat) {
+  if (repeat === null || typeof repeat !== 'object' || Array.isArray(repeat)) {
+    throw new McpError(ErrorCode.InvalidParams, 'repeat 须为对象，如 {"m": false}');
+  }
+  for (const k of Object.keys(repeat)) {
+    if (!REPEAT_KEYS.includes(k)) {
+      throw new McpError(ErrorCode.InvalidParams, `repeat 未知键: ${k}，允许: ${REPEAT_KEYS.join(',')}`);
+    }
+    if (typeof repeat[k] !== 'boolean') {
+      throw new McpError(ErrorCode.InvalidParams, `repeat.${k} 须为布尔值`);
+    }
+  }
+}
+
+// create：缺键补 true（与服务端默认一致）
+function normalizeRepeatOnCreate(repeat) {
+  if (repeat === undefined) return undefined;
+  assertRepeatShape(repeat);
+  const out = {};
+  for (const k of REPEAT_KEYS) {
+    out[k] = repeat[k] ?? true;
+  }
+  return out;
+}
+
+// update：部分输入与现有合并，缺键保持原值（Q5-B）
+function mergeRepeat(existing, patch) {
+  if (patch === undefined) return undefined;
+  assertRepeatShape(patch);
+  const merged = {};
+  for (const k of REPEAT_KEYS) {
+    merged[k] = patch[k] ?? existing?.[k] ?? true;
+  }
+  return merged;
+}
+
+function assertInteger(value, field) {
+  if (!Number.isInteger(value)) {
+    throw new McpError(ErrorCode.InvalidParams, `${field} 须为整数，收到: ${value}`);
+  }
+}
+
+function assertIntegerArray(arr, field) {
+  if (!Array.isArray(arr)) {
+    throw new McpError(ErrorCode.InvalidParams, `${field} 须为整数数组`);
+  }
+  for (const v of arr) {
+    if (!Number.isInteger(v)) {
+      throw new McpError(ErrorCode.InvalidParams, `${field} 须为整数数组，收到: ${v}`);
+    }
+  }
+  return arr;
+}
+
+function hasDailyFields(o) {
+  return o.startDate !== undefined || o.frequency !== undefined || o.repeat !== undefined ||
+    o.everyX !== undefined || o.daysOfMonth !== undefined || o.weeksOfMonth !== undefined;
+}
+
+// Q4 耦合校验 + 组装（type 为任务类型；existingFreq/existingRepeat 仅 update 传，用于缺省推断与合并）
+function buildDailyFields(input, { type, existingFreq, existingRepeat, isUpdate }) {
+  const warnings = [];
+  const payload = {};
+  if (!hasDailyFields(input)) return { payload, warnings };
+  if (type && type !== 'daily') {
+    throw new McpError(ErrorCode.InvalidParams, `startDate/frequency/repeat/everyX/daysOfMonth/weeksOfMonth 仅 daily 有效，当前类型为 ${type}`);
+  }
+  const { startDate, frequency, repeat, everyX, daysOfMonth, weeksOfMonth } = input;
+  const effFreq = frequency ?? existingFreq ?? (repeat !== undefined ? 'weekly' : undefined);
+  let normRepeat;
+  if (repeat !== undefined) {
+    normRepeat = isUpdate ? mergeRepeat(existingRepeat, repeat) : normalizeRepeatOnCreate(repeat);
+  }
+  if (repeat !== undefined && effFreq !== undefined && effFreq !== 'weekly') {
+    if (effFreq === 'monthly') {
+      if (Object.values(normRepeat).every(Boolean)) {
+        normRepeat = undefined; // 全周无限制：与不传 repeat 等价，直接丢弃，不 warning
+      } else {
+        warnings.push('frequency=monthly 时 repeat 会被服务端忽略；要无 warning 的全周模式请用 frequency=weekly 并去掉 daysOfMonth/weeksOfMonth');
+      }
+    } else {
+      throw new McpError(ErrorCode.InvalidParams, `repeat 仅 frequency=weekly 有效，当前为 ${effFreq}`);
+    }
+  }
+  if ((daysOfMonth !== undefined || weeksOfMonth !== undefined) && (frequency ?? existingFreq) !== 'monthly') {
+    if (frequency === undefined && existingFreq === undefined) {
+      throw new McpError(ErrorCode.InvalidParams, 'daysOfMonth/weeksOfMonth 须配合 frequency=monthly 使用');
+    }
+    throw new McpError(ErrorCode.InvalidParams, `daysOfMonth/weeksOfMonth 仅 frequency=monthly 有效，当前为 ${frequency ?? existingFreq}`);
+  }
+  if (frequency !== undefined) payload.frequency = frequency;
+  if (normRepeat !== undefined) payload.repeat = normRepeat;
+  if (everyX !== undefined) { assertInteger(everyX, 'everyX'); payload.everyX = everyX; }
+  if (daysOfMonth !== undefined) payload.daysOfMonth = assertIntegerArray(daysOfMonth, 'daysOfMonth');
+  if (weeksOfMonth !== undefined) payload.weeksOfMonth = assertIntegerArray(weeksOfMonth, 'weeksOfMonth');
+  if (startDate !== undefined && startDate !== null && startDate !== '') {
+    payload.startDate = toDailyStartDate(startDate, type || 'daily');
+  }
+  return { payload, warnings };
+}
+
 async function createTask(taskData) {
-  const { type, tags, date, difficulty, ...rest } = taskData || {};
+  const { type, tags, date, difficulty, startDate, frequency, repeat, everyX, daysOfMonth, weeksOfMonth, ...rest } = taskData || {};
   // difficulty 已废弃：直接丢弃，不透传（breaking change，见 GLOSSARY）
   void difficulty;
   if (date !== undefined && date !== null && date !== '' && type && type !== 'todo') {
@@ -713,15 +904,18 @@ async function createTask(taskData) {
   if (date !== undefined && date !== null && date !== '') {
     payload.date = toTodoDate(date, type);
   }
+  const daily = buildDailyFields({ startDate, frequency, repeat, everyX, daysOfMonth, weeksOfMonth }, { type });
+  Object.assign(payload, daily.payload);
   Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
   const response = await habiticaClient.post('/tasks/user', payload);
   const task = response.data.data;
+  const warnText = daily.warnings.length > 0 ? `（注意：${daily.warnings.join('；')}）` : '';
   
   return {
     content: [
       {
         type: 'text',
-        text: `成功创建任务: ${task.text} (ID: ${task.id})`,
+        text: `成功创建任务: ${task.text} (ID: ${task.id})${warnText}`,
       },
     ],
   };
@@ -747,39 +941,68 @@ async function scoreTask(taskId, direction = 'up') {
 }
 
 async function updateTask(taskId, updates) {
-  const { taskId: _drop, difficulty, tags, date, ...rest } = updates || {};
+  const { taskId: _drop, difficulty, tags, date, startDate, frequency, repeat, everyX, daysOfMonth, weeksOfMonth, ...rest } = updates || {};
   void _drop;
   void difficulty;
   const payload = { ...rest };
   if (tags !== undefined) {
     payload.tags = await resolveTagIds(tags);
   }
+  const dailyInput = { startDate, frequency, repeat, everyX, daysOfMonth, weeksOfMonth };
+  const needExisting = (date !== undefined && date !== '' && date !== null) || hasDailyFields(dailyInput);
+  let existing;
+  if (needExisting) {
+    try {
+      const r = await habiticaClient.get(`/tasks/${taskId}`);
+      existing = r.data?.data;
+    } catch {
+      existing = undefined;
+    }
+  }
+  const taskType = existing?.type;
   if (date !== undefined) {
     if (date === '' || date === null) {
       payload.date = null;
     } else {
-      let taskType;
-      try {
-        const r = await habiticaClient.get(`/tasks/${taskId}`);
-        taskType = r.data?.data?.type;
-      } catch {
-        taskType = undefined;
-      }
       if (taskType && taskType !== 'todo') {
         throw new McpError(ErrorCode.InvalidParams, `date 仅 todo 有效，当前任务类型为 ${taskType}`);
       }
       payload.date = toTodoDate(date, taskType || 'todo');
     }
   }
+  let dailyWarnings = [];
+  if (startDate !== undefined && (startDate === '' || startDate === null)) {
+    // Q6: 空串/null=清除；其余 daily 字段照常校验组装
+    const { startDate: _clear, ...restDaily } = dailyInput;
+    const daily = buildDailyFields(restDaily, {
+      type: taskType,
+      existingFreq: existing?.frequency,
+      existingRepeat: existing?.repeat,
+      isUpdate: true,
+    });
+    Object.assign(payload, daily.payload);
+    payload.startDate = null;
+    dailyWarnings = daily.warnings;
+  } else {
+    const daily = buildDailyFields(dailyInput, {
+      type: taskType,
+      existingFreq: existing?.frequency,
+      existingRepeat: existing?.repeat,
+      isUpdate: true,
+    });
+    Object.assign(payload, daily.payload);
+    dailyWarnings = daily.warnings;
+  }
   Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
   const response = await habiticaClient.put(`/tasks/${taskId}`, payload);
   const task = response.data.data;
+  const warnText = dailyWarnings.length > 0 ? `（注意：${dailyWarnings.join('；')}）` : '';
   
   return {
     content: [
       {
         type: 'text',
-        text: `成功更新任务: ${task.text}`,
+        text: `成功更新任务: ${task.text}${warnText}`,
       },
     ],
   };
